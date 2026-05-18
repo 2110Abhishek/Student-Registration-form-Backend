@@ -9,14 +9,8 @@ import CryptoJS from 'crypto-js';
 export const registerStudent = async (req: Request, res: Response) => {
   const FRONTEND_SECRET = 'student_registration_system_2026_secure_key';
   try {
-    const { encryptedPayload } = req.body;
-
-    if (!encryptedPayload) {
-      return res.status(400).json({ message: 'No payload provided' });
-    }
-
-    // 1. Decrypt frontend layer
-    const decryptedData = decryptFrontendLayer(encryptedPayload, FRONTEND_SECRET);
+    // 1. Decrypt frontend layer (decrypts each field separately)
+    const decryptedData = decryptFrontendLayer(req.body, FRONTEND_SECRET);
     if (!decryptedData) {
       return res.status(400).json({ message: 'Encryption Key Mismatch. Please check Server/Client secrets.' });
     }
@@ -62,17 +56,23 @@ export const getStudents = async (req: Request, res: Response) => {
       // 1. Decrypt backend layer
       const otherData = decryptBackend(s.encryptedData);
       
-      // 2. Combine with email
+      // 2. Combine with email and ID
       const studentData = { id: s._id, email: s.email, ...otherData };
       
-      // 3. Re-encrypt with frontend layer before sending
-      // This matches the requirement: Backend decrypts one level, sends encrypted data back
-      const encryptedForFrontend = CryptoJS.AES.encrypt(
-        JSON.stringify(studentData),
-        FRONTEND_SECRET
-      ).toString();
+      // 3. Re-encrypt each field with the frontend layer before sending
+      const encryptedStudentData: any = {};
+      for (const key of Object.keys(studentData)) {
+        if (key === 'id') {
+          encryptedStudentData[key] = studentData[key];
+        } else {
+          encryptedStudentData[key] = CryptoJS.AES.encrypt(
+            String((studentData as any)[key]),
+            FRONTEND_SECRET
+          ).toString();
+        }
+      }
 
-      return encryptedForFrontend;
+      return encryptedStudentData;
     });
 
     res.json(decryptedStudents);
@@ -86,8 +86,7 @@ export const getStudents = async (req: Request, res: Response) => {
 export const updateStudent = async (req: Request, res: Response) => {
   const FRONTEND_SECRET = 'student_registration_system_2026_secure_key';
   try {
-    const { encryptedPayload } = req.body;
-    const decryptedData = decryptFrontendLayer(encryptedPayload, FRONTEND_SECRET);
+    const decryptedData = decryptFrontendLayer(req.body, FRONTEND_SECRET);
     
     if (!decryptedData) {
       return res.status(400).json({ message: 'Invalid payload' });
@@ -100,9 +99,18 @@ export const updateStudent = async (req: Request, res: Response) => {
       return res.status(404).json({ message: 'Student not found' });
     }
 
-    // Update fields
-    if (email) student.email = email;
-    if (password) student.passwordHash = await bcrypt.hash(password, 10);
+    // Check duplicate email
+    if (email) {
+      const emailExists = await Student.findOne({ email, _id: { $ne: req.params.id } });
+      if (emailExists) {
+        return res.status(400).json({ message: 'Email address is already in use by another student' });
+      }
+      student.email = email;
+    }
+
+    if (password) {
+      student.passwordHash = await bcrypt.hash(password, 10);
+    }
     
     // Re-encrypt other data
     student.encryptedData = encryptBackend(otherData);
@@ -135,8 +143,7 @@ export const deleteStudent = async (req: Request, res: Response) => {
 export const loginStudent = async (req: Request, res: Response) => {
   const FRONTEND_SECRET = 'student_registration_system_2026_secure_key';
   try {
-    const { encryptedPayload } = req.body;
-    const decryptedData = decryptFrontendLayer(encryptedPayload, FRONTEND_SECRET);
+    const decryptedData = decryptFrontendLayer(req.body, FRONTEND_SECRET);
     
     if (!decryptedData) {
       return res.status(400).json({ message: 'Invalid payload' });
